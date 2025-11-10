@@ -48,5 +48,7 @@ ENV PORT=${PORT:-5201}
 # Expose port
 EXPOSE ${PORT:-5201}
 
+USER 10014
+
 # Run the application
 CMD ["python", "-m", "app.main"]
