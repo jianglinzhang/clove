@@ -8,7 +8,7 @@ from typing import Dict
 from loguru import logger
 from fastapi.responses import StreamingResponse
 
-from app.models.claude import TextContent
+from app.models.claude import MessagesAPIRequest, TextContent
 from app.processors.base import BaseProcessor
 from app.processors.claude_ai import ClaudeAIContext
 from app.services.account import account_manager
@@ -92,7 +92,11 @@ class ClaudeAPIProcessor(BaseProcessor):
                 request_json = context.messages_api_request.model_dump_json(
                     exclude_none=True
                 )
-                headers = self._prepare_headers(account.oauth_token.access_token)
+                headers = self._prepare_headers(
+                    account.oauth_token.access_token,
+                    context.messages_api_request,
+                    context.original_request,
+                )
 
                 session = create_session(
                     proxy=settings.proxy_url,
@@ -212,11 +216,33 @@ class ClaudeAPIProcessor(BaseProcessor):
         else:
             request.system = [system_message]
 
-    def _prepare_headers(self, access_token: str) -> Dict[str, str]:
-        """Prepare headers for Claude API request."""
+    def _prepare_headers(
+        self,
+        access_token: str,
+        request: MessagesAPIRequest,
+        original_request=None,
+    ) -> Dict[str, str]:
+        """Prepare headers for Claude API request.
+
+        Beta headers: oauth 是 OAuth 认证必需的。
+        effort 和 structured-outputs 已 GA，不再需要 beta header。
+        客户端的 anthropic-beta header 会被透传（去重合并）。
+        """
+        # oauth beta 是 OAuth 认证必需的
+        beta_features = ["oauth-2025-04-20"]
+
+        # 透传客户端 anthropic-beta header，与内部 beta 去重合并
+        if original_request:
+            client_beta = original_request.headers.get("anthropic-beta", "")
+            if client_beta:
+                for beta in client_beta.split(","):
+                    beta = beta.strip()
+                    if beta and beta not in beta_features:
+                        beta_features.append(beta)
+
         return {
             "Authorization": f"Bearer {access_token}",
-            "anthropic-beta": "oauth-2025-04-20",
+            "anthropic-beta": ",".join(beta_features),
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }

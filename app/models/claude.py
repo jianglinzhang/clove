@@ -1,5 +1,5 @@
 from typing import Optional, List, Union, Literal, Dict, Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from enum import Enum
 
 
@@ -68,6 +68,13 @@ class ThinkingContent(BaseModel):
     thinking: str
 
 
+# redacted_thinking 块：API 可能返回被审查的思考内容
+class RedactedThinkingContent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    type: Literal["redacted_thinking"]
+    data: str
+
+
 class ToolUseContent(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: Literal["tool_use"]
@@ -107,6 +114,7 @@ ContentBlock = Union[
     TextContent,
     ImageContent,
     ThinkingContent,
+    RedactedThinkingContent,
     ToolUseContent,
     ToolResultContent,
     ServerToolUseContent,
@@ -122,7 +130,7 @@ class InputMessage(BaseModel):
 
 class ThinkingOptions(BaseModel):
     model_config = ConfigDict(extra="allow")
-    type: Literal["enabled", "disabled"] = "disabled"
+    type: Literal["enabled", "disabled", "adaptive"] = "disabled"
     budget_tokens: Optional[int] = None
 
 
@@ -133,11 +141,34 @@ class ToolChoice(BaseModel):
     disable_parallel_tool_use: Optional[bool] = None
 
 
+class CustomToolSpec(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    description: Optional[str] = None
+    input_schema: Optional[Any] = None
+
+
 class Tool(BaseModel):
     model_config = ConfigDict(extra="allow")
-    name: str
-    input_schema: Any
+    type: Optional[str] = None
+    name: Optional[str] = None
+    input_schema: Optional[Any] = None
     description: Optional[str] = None
+    custom: Optional[CustomToolSpec] = None
+
+
+class OutputConfig(BaseModel):
+    """Output configuration (effort, format, etc). effort and structured outputs are now GA."""
+
+    model_config = ConfigDict(extra="allow")
+    effort: Optional[Literal["low", "medium", "high", "max"]] = None
+
+
+class OutputFormat(BaseModel):
+    """Output format for structured outputs (deprecated, use output_config.format instead)."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True, serialize_by_alias=True)
+    type: Literal["json_schema"]
+    schema_: Optional[Dict[str, Any]] = Field(default=None, alias="schema")
 
 
 class ServerToolUsage(BaseModel):
@@ -160,7 +191,7 @@ class MessagesAPIRequest(BaseModel):
     messages: List[InputMessage]
     max_tokens: int = Field(default=8192, ge=1)
     system: Optional[str | List[TextContent]] = None
-    temperature: Optional[float] = Field(default=1.0, ge=0, le=1)
+    temperature: Optional[float] = Field(default=None, ge=0, le=1)
     top_p: Optional[float] = Field(default=None, ge=0, le=1)
     top_k: Optional[int] = Field(default=None, ge=0)
     stop_sequences: Optional[List[str]] = None
@@ -169,6 +200,20 @@ class MessagesAPIRequest(BaseModel):
     thinking: Optional[ThinkingOptions] = None
     tool_choice: Optional[ToolChoice] = None
     tools: Optional[List[Tool]] = None
+    output_config: Optional[OutputConfig] = None
+    output_format: Optional[OutputFormat] = None
+
+    @model_validator(mode="after")
+    def validate_thinking_tokens(self) -> "MessagesAPIRequest":
+        """Ensure max_tokens > thinking.budget_tokens when thinking is enabled."""
+        if (
+            self.thinking
+            and self.thinking.type == "enabled"
+            and self.thinking.budget_tokens is not None
+            and self.max_tokens <= self.thinking.budget_tokens
+        ):
+            self.max_tokens = self.thinking.budget_tokens + 1
+        return self
 
 
 class Message(BaseModel):
